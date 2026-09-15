@@ -10,11 +10,14 @@ const { pipeline } = require('stream/promises');
 const app = express();
 app.use(cors({
   origin: [
-    'https://yt-grabs.vercel.app',
-    'http://localhost:3000', // for local testing
-    'http://localhost:5173'  // for local testing (Vite)
+    'https://www.ytgrab4k.com',
+    'https://ytgrab4k.com',
+    'http://localhost:3000',        // for local development
+    'http://localhost:5173'         // if you're using Vite
   ],
-  credentials: true
+  credentials: true,                // only if you use cookies / authorization headers
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json({ limit: '1mb' }));
 
