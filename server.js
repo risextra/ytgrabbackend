@@ -9,13 +9,22 @@ const { pipeline } = require('stream/promises');
 
 const app = express();
 app.use(cors({
-  origin: [
-    'https://www.ytgrab4k.com',
-    'https://ytgrab4k.com',
-    'http://localhost:3000',        // for local development
-    'http://localhost:5173'         // if you're using Vite
-  ],
-  credentials: true,                // only if you use cookies / authorization headers
+  origin: function (origin, callback) {
+    const allowedOrigins = [
+      'https://www.ytgrab4k.com',
+      'https://ytgrab4k.com',
+      'http://localhost:3000',
+      'http://localhost:5173'
+    ];
+    
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
