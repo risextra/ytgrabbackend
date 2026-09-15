@@ -4,12 +4,14 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
+const ffmpeg = require('fluent-ffmpeg');
 
 const app = express();
 
-// ========== CORS FIX ==========
+// ========== CORS ==========
 app.use(cors({
   origin: true,
   credentials: true,
@@ -17,7 +19,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 app.options('*', cors());
-// ==============================
+// ==========================
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -26,8 +28,7 @@ const FALLBACK_CLIENTS = ['ANDROID', 'IOS', 'MWEB', 'TV_EMBEDDED', 'WEB'];
 const AUTH_COOKIE_NAMES = ['SID', 'HSID', 'SSID', 'SAPISID', 'APISID', '__Secure-1PSID', '__Secure-3PSID', 'LOGIN_INFO'];
 
 // ------------------------------------------------------------------
-// Cookie loading — only youtube.com/google.com, warns if no real
-// sign-in cookies are present
+// Cookie loading
 // ------------------------------------------------------------------
 function loadCookieHeader() {
   if (!fs.existsSync(COOKIES_PATH)) return null;
@@ -113,12 +114,7 @@ async function getYt() {
 }
 
 // ------------------------------------------------------------------
-// PO Token minter — generates per-video BotGuard-attested tokens.
-// This is a reverse-engineered reimplementation of a Google
-// anti-abuse mechanism (via the bgutils-js library) — best-effort,
-// not guaranteed, and may need re-tuning if YouTube changes things.
-// If setup fails for any reason, we log it and the app keeps running,
-// falling back to the plain client-cascade approach.
+// PO Token minter
 // ------------------------------------------------------------------
 let poTokenMinter = null;
 let poTokenSetupAttempted = false;
@@ -132,10 +128,6 @@ async function setupPoTokenMinter(innertube) {
     const { BG, buildURL, GOOG_API_KEY, USER_AGENT } = await import('bgutils-js');
     const { JSDOM } = await import('jsdom');
 
-    // NOTE: this mutates Node's global scope (globalThis.window/document/
-    // navigator) once, for the lifetime of the process, so BotGuard's
-    // reverse-engineered VM code sees a browser-like environment. Done
-    // only once, guarded above, since this process only does this one job.
     const dom = new JSDOM(
       '<!DOCTYPE html><html lang="en"><head><title></title></head><body></body></html>',
       { url: 'https://www.youtube.com/', referrer: 'https://www.youtube.com/', userAgent: USER_AGENT }
@@ -168,7 +160,7 @@ async function setupPoTokenMinter(innertube) {
 
     const webPoSignalOutput = [];
     const botguardResponse = await botguard.snapshot({ webPoSignalOutput });
-    const requestKey = 'O43z0dpjhgX20SCx4KAo'; // public constant used by all bgutils-js consumers
+    const requestKey = 'O43z0dpjhgX20SCx4KAo';
 
     const integrityTokenResponse = await fetch(buildURL('GenerateIT', true), {
       method: 'POST',
@@ -205,7 +197,7 @@ async function mintPoToken(innertube, videoId) {
 }
 
 // ------------------------------------------------------------------
-// URL parsing
+// Helpers
 // ------------------------------------------------------------------
 function extractVideoId(url) {
   if (!url) return null;
@@ -228,9 +220,6 @@ function extractVideoId(url) {
   return null;
 }
 
-// ------------------------------------------------------------------
-// Timeout wrapper
-// ------------------------------------------------------------------
 function withTimeout(promise, ms, label) {
   return Promise.race([
     promise,
@@ -250,8 +239,7 @@ async function fetchInfo(innertube, videoId) {
 }
 
 // ------------------------------------------------------------------
-// Download — tries WEB+PO-token first, then falls back to the
-// plain client cascade without a token.
+// Progressive download (fast, up to ~720p)
 // ------------------------------------------------------------------
 async function downloadProgressive(innertube, videoId, quality) {
   const qualitiesToTry = quality === 'best' ? ['best'] : [quality, 'best'];
@@ -266,11 +254,11 @@ async function downloadProgressive(innertube, videoId, quality) {
           20000,
           `download(WEB+PO, ${q})`
         );
-        console.log(`✅ Got stream via client=WEB+PO quality=${q}`);
+        console.log(`✅ Got progressive stream via WEB+PO quality=${q}`);
         return { stream, client: 'WEB+PO', actualQuality: q };
       } catch (err) {
         lastErr = err;
-        console.log(`❌ client=WEB+PO quality=${q} failed: ${err.message}`);
+        console.log(`❌ progressive WEB+PO ${q} failed: ${err.message}`);
       }
     }
   }
@@ -283,18 +271,21 @@ async function downloadProgressive(innertube, videoId, quality) {
           20000,
           `download(${client}, ${q})`
         );
-        console.log(`✅ Got stream via client=${client} quality=${q}`);
+        console.log(`✅ Got progressive stream via ${client} quality=${q}`);
         return { stream, client, actualQuality: q };
       } catch (err) {
         lastErr = err;
-        console.log(`❌ client=${client} quality=${q} failed: ${err.message}`);
+        console.log(`❌ progressive ${client} ${q} failed: ${err.message}`);
       }
     }
   }
 
-  throw lastErr || new Error('No matching formats found on any client');
+  throw lastErr || new Error('No progressive formats found');
 }
 
+// ------------------------------------------------------------------
+// Audio only
+// ------------------------------------------------------------------
 async function downloadAudio(innertube, videoId) {
   let lastErr;
 
@@ -306,11 +297,11 @@ async function downloadAudio(innertube, videoId) {
         20000,
         `download-audio(WEB+PO)`
       );
-      console.log(`✅ Got audio stream via client=WEB+PO`);
+      console.log(`✅ Got audio via WEB+PO`);
       return { stream, client: 'WEB+PO' };
     } catch (err) {
       lastErr = err;
-      console.log(`❌ audio client=WEB+PO failed: ${err.message}`);
+      console.log(`❌ audio WEB+PO failed: ${err.message}`);
     }
   }
 
@@ -321,14 +312,14 @@ async function downloadAudio(innertube, videoId) {
         20000,
         `download-audio(${client})`
       );
-      console.log(`✅ Got audio stream via client=${client}`);
+      console.log(`✅ Got audio via ${client}`);
       return { stream, client };
     } catch (err) {
       lastErr = err;
-      console.log(`❌ audio client=${client} failed: ${err.message}`);
+      console.log(`❌ audio ${client} failed: ${err.message}`);
     }
   }
-  throw lastErr || new Error('No matching audio formats found on any client');
+  throw lastErr || new Error('No audio formats found');
 }
 
 // ------------------------------------------------------------------
@@ -357,10 +348,12 @@ app.post('/api/info', async (req, res) => {
       '';
 
     const formats = [
-      { format_id: 'best', resolution: 'Best Quality (recommended)', ext: 'mp4' },
-      { format_id: '720', resolution: '720p (if available)', ext: 'mp4' },
+      { format_id: 'best', resolution: '4K', ext: 'mp4' },
+      { format_id: '1080', resolution: '1080p', ext: 'mp4' },
+      { format_id: '720', resolution: '720p', ext: 'mp4' },
+      { format_id: '480', resolution: '480p', ext: 'mp4' },
       { format_id: '360', resolution: '360p', ext: 'mp4' },
-      { format_id: 'audio', resolution: 'Audio Only', ext: 'm4a' },
+      { format_id: 'audio', resolution: 'Audio Only (best)', ext: 'm4a' },
     ];
 
     res.json({ title, thumbnail, duration, formats, channel, videoId });
@@ -390,31 +383,112 @@ app.post('/api/download', async (req, res) => {
   try {
     const innertube = await getYt();
 
-    let webStream, ext, contentType;
-
+    // ========== AUDIO ONLY ==========
     if (formatId === 'audio') {
       const result = await downloadAudio(innertube, videoId);
-      webStream = result.stream;
-      ext = 'm4a';
-      contentType = 'audio/mp4';
-    } else {
-      const requestedQuality = formatId === 'best' ? 'best' : formatId + 'p';
-      const result = await downloadProgressive(innertube, videoId, requestedQuality);
-      webStream = result.stream;
-      ext = 'mp4';
-      contentType = 'video/mp4';
-      if (result.actualQuality !== requestedQuality) {
-        console.log(`Served ${result.actualQuality} instead of requested ${requestedQuality}`);
-      }
+      const nodeStream = Readable.fromWeb(result.stream);
+      const safeName = `ytgrab_${videoId}_${Date.now()}.m4a`;
+
+      res.setHeader('Content-Type', 'audio/mp4');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+      await pipeline(nodeStream, res);
+      return;
     }
 
-    const nodeStream = Readable.fromWeb(webStream);
-    const safeName = `ytgrab_${videoId}_${Date.now()}.${ext}`;
+    // ========== VIDEO ==========
+    const qualityMap = {
+      best: 'best',
+      '1080': '1080p',
+      '720': '720p',
+      '480': '480p',
+      '360': '360p',
+    };
+    const requestedQuality = qualityMap[formatId] || 'best';
 
-    res.setHeader('Content-Type', contentType);
+    // Try progressive first (faster)
+    try {
+      const result = await downloadProgressive(innertube, videoId, requestedQuality);
+      const nodeStream = Readable.fromWeb(result.stream);
+      const safeName = `ytgrab_${videoId}_${Date.now()}.mp4`;
+
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+      await pipeline(nodeStream, res);
+      return;
+    } catch (progressiveErr) {
+      console.log('Progressive failed → trying adaptive + ffmpeg...', progressiveErr.message);
+    }
+
+    // ========== HIGH QUALITY (adaptive + ffmpeg) ==========
+    const info = await innertube.getInfo(videoId);
+    const streamingData = info.streaming_data;
+
+    if (!streamingData?.adaptive_formats) {
+      throw new Error('No adaptive formats available');
+    }
+
+    const videoFormats = streamingData.adaptive_formats
+      .filter(f => f.mime_type?.includes('video') && f.has_video && !f.has_audio)
+      .sort((a, b) => (b.height || 0) - (a.height || 0));
+
+    const audioFormats = streamingData.adaptive_formats
+      .filter(f => f.mime_type?.includes('audio') && f.has_audio && !f.has_video)
+      .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+    let videoFormat;
+    if (requestedQuality === 'best') {
+      videoFormat = videoFormats[0];
+    } else {
+      const targetHeight = parseInt(requestedQuality);
+      videoFormat = videoFormats.find(f => f.height === targetHeight) || videoFormats[0];
+    }
+
+    const audioFormat = audioFormats[0];
+
+    if (!videoFormat || !audioFormat) {
+      throw new Error('Could not find suitable video/audio formats');
+    }
+
+    console.log(`🎬 Merging ${videoFormat.height}p + audio with ffmpeg`);
+
+    // Download both
+    const videoStream = await innertube.download(videoId, { itag: videoFormat.itag, client: 'WEB' });
+    const audioStream = await innertube.download(videoId, { itag: audioFormat.itag, client: 'WEB' });
+
+    const videoNode = Readable.fromWeb(videoStream);
+    const audioNode = Readable.fromWeb(audioStream);
+
+    // Temp files
+    const tmpDir = os.tmpdir();
+    const videoPath = path.join(tmpDir, `v_${videoId}_${Date.now()}.mp4`);
+    const audioPath = path.join(tmpDir, `a_${videoId}_${Date.now()}.m4a`);
+    const outputPath = path.join(tmpDir, `out_${videoId}_${Date.now()}.mp4`);
+
+    await pipeline(videoNode, fs.createWriteStream(videoPath));
+    await pipeline(audioNode, fs.createWriteStream(audioPath));
+
+    // Merge
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .input(videoPath)
+        .input(audioPath)
+        .outputOptions(['-c:v copy', '-c:a aac', '-movflags +faststart', '-shortest'])
+        .save(outputPath)
+        .on('end', resolve)
+        .on('error', reject);
+    });
+
+    // Send final file
+    const safeName = `ytgrab_${videoId}_${videoFormat.height || 'high'}_${Date.now()}.mp4`;
+    res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
 
-    await pipeline(nodeStream, res);
+    const finalStream = fs.createReadStream(outputPath);
+    await pipeline(finalStream, res);
+
+    // Cleanup
+    [videoPath, audioPath, outputPath].forEach(p => fs.unlink(p, () => {}));
+
   } catch (err) {
     console.error('Download error:', err.message);
     if (!res.headersSent) {
@@ -469,7 +543,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 app.listen(PORT, HOST, () => {
   console.log(`🚀 Backend running on ${HOST}:${PORT}`);
-  console.log(`📦 Engine: youtubei.js`);
+  console.log(`📦 Engine: youtubei.js + ffmpeg`);
   console.log(`🌍 Node: ${process.version}`);
 });
 
