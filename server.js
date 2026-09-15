@@ -9,7 +9,7 @@ const { pipeline } = require('stream/promises');
 
 const app = express();
 
-// ========== CORS FIX ==========
+// ========== CORS ==========
 app.use(cors({
   origin: true,
   credentials: true,
@@ -17,7 +17,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 app.options('*', cors());
-// ==============================
+// ==========================
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -26,8 +26,7 @@ const FALLBACK_CLIENTS = ['ANDROID', 'IOS', 'MWEB', 'TV_EMBEDDED', 'WEB'];
 const AUTH_COOKIE_NAMES = ['SID', 'HSID', 'SSID', 'SAPISID', 'APISID', '__Secure-1PSID', '__Secure-3PSID', 'LOGIN_INFO'];
 
 // ------------------------------------------------------------------
-// Cookie loading — only youtube.com/google.com, warns if no real
-// sign-in cookies are present
+// Cookie loading
 // ------------------------------------------------------------------
 function loadCookieHeader() {
   if (!fs.existsSync(COOKIES_PATH)) return null;
@@ -113,12 +112,7 @@ async function getYt() {
 }
 
 // ------------------------------------------------------------------
-// PO Token minter — generates per-video BotGuard-attested tokens.
-// This is a reverse-engineered reimplementation of a Google
-// anti-abuse mechanism (via the bgutils-js library) — best-effort,
-// not guaranteed, and may need re-tuning if YouTube changes things.
-// If setup fails for any reason, we log it and the app keeps running,
-// falling back to the plain client-cascade approach.
+// PO Token minter
 // ------------------------------------------------------------------
 let poTokenMinter = null;
 let poTokenSetupAttempted = false;
@@ -132,10 +126,6 @@ async function setupPoTokenMinter(innertube) {
     const { BG, buildURL, GOOG_API_KEY, USER_AGENT } = await import('bgutils-js');
     const { JSDOM } = await import('jsdom');
 
-    // NOTE: this mutates Node's global scope (globalThis.window/document/
-    // navigator) once, for the lifetime of the process, so BotGuard's
-    // reverse-engineered VM code sees a browser-like environment. Done
-    // only once, guarded above, since this process only does this one job.
     const dom = new JSDOM(
       '<!DOCTYPE html><html lang="en"><head><title></title></head><body></body></html>',
       { url: 'https://www.youtube.com/', referrer: 'https://www.youtube.com/', userAgent: USER_AGENT }
@@ -168,7 +158,7 @@ async function setupPoTokenMinter(innertube) {
 
     const webPoSignalOutput = [];
     const botguardResponse = await botguard.snapshot({ webPoSignalOutput });
-    const requestKey = 'O43z0dpjhgX20SCx4KAo'; // public constant used by all bgutils-js consumers
+    const requestKey = 'O43z0dpjhgX20SCx4KAo';
 
     const integrityTokenResponse = await fetch(buildURL('GenerateIT', true), {
       method: 'POST',
@@ -205,7 +195,7 @@ async function mintPoToken(innertube, videoId) {
 }
 
 // ------------------------------------------------------------------
-// URL parsing
+// Helpers
 // ------------------------------------------------------------------
 function extractVideoId(url) {
   if (!url) return null;
@@ -228,9 +218,6 @@ function extractVideoId(url) {
   return null;
 }
 
-// ------------------------------------------------------------------
-// Timeout wrapper
-// ------------------------------------------------------------------
 function withTimeout(promise, ms, label) {
   return Promise.race([
     promise,
@@ -250,8 +237,7 @@ async function fetchInfo(innertube, videoId) {
 }
 
 // ------------------------------------------------------------------
-// Download — tries WEB+PO-token first, then falls back to the
-// plain client cascade without a token.
+// Progressive download
 // ------------------------------------------------------------------
 async function downloadProgressive(innertube, videoId, quality) {
   const qualitiesToTry = quality === 'best' ? ['best'] : [quality, 'best'];
@@ -295,6 +281,9 @@ async function downloadProgressive(innertube, videoId, quality) {
   throw lastErr || new Error('No matching formats found on any client');
 }
 
+// ------------------------------------------------------------------
+// Audio only
+// ------------------------------------------------------------------
 async function downloadAudio(innertube, videoId) {
   let lastErr;
 
@@ -479,4 +468,4 @@ process.on('unhandledRejection', (reason) => {
 
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err);
-});  look now it's fine
+});
