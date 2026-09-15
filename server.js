@@ -8,26 +8,17 @@ const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 
 const app = express();
+
+// ========== CORS FIX ==========
 app.use(cors({
-  origin: function (origin, callback) {
-    const allowedOrigins = [
-      'https://www.ytgrab4k.com',
-      'https://ytgrab4k.com',
-      'http://localhost:3000',
-      'http://localhost:5173'
-    ];
-    
-    // Allow requests with no origin (like mobile apps or curl)
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: true,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+app.options('*', cors());
+// ==============================
+
 app.use(express.json({ limit: '1mb' }));
 
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
