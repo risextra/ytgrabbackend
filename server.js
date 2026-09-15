@@ -9,8 +9,12 @@ const { pipeline } = require('stream/promises');
 
 const app = express();
 app.use(cors({
-  origin: ['http://localhost:5173'],
-  exposedHeaders: ['Content-Disposition'],
+  origin: [
+    'https://yt-grabs.vercel.app',
+    'http://localhost:3000', // for local testing
+    'http://localhost:5173'  // for local testing (Vite)
+  ],
+  credentials: true
 }));
 app.use(express.json({ limit: '1mb' }));
 
